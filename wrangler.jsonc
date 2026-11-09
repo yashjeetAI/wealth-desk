@@ -1,0 +1,29 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "wealth-desk",
+  "main": "src/index.ts",
+  "workers_dev": true,
+  "preview_urls": false,
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "durable_objects": {
+    "bindings": [
+      { "name": "MCP_OBJECT", "class_name": "PortfolioMCP" },
+      { "name": "TOKEN_STORE", "class_name": "TokenStore" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["PortfolioMCP", "TokenStore"] }],
+  "kv_namespaces": [
+    // Run: npx wrangler kv namespace create OAUTH_KV, then paste the id here
+    { "binding": "OAUTH_KV", "id": "<your-kv-namespace-id>" }
+  ],
+  "vars": {
+    // Your numeric GitHub user id (https://api.github.com/users/<your-login> -> id)
+    "ALLOWED_GITHUB_USER_ID": "<your-github-user-id>",
+    // Kill switch: set to "true" and redeploy to turn every tool off.
+    "DISABLED": "false",
+    // Public URL of your Worker, shown after the first deploy
+    "PUBLIC_URL": "https://wealth-desk.<your-subdomain>.workers.dev"
+  }
+}
