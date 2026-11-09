@@ -24,7 +24,7 @@ const FORBIDDEN = [
   /createRule|modifyRule|cancelRule/i,
   /\/order\/(create|modify|cancel)/i,
   /smart-?order/i,
-  /\/order\/v1\/(?!getPosition)/i, // the only allowed Angel /order/ path is getPosition (read-only)
+  /\/order\/v1\/(?!getPosition|searchScrip)/i, // the only allowed Angel /order/ paths are read-only: getPosition, searchScrip
 ];
 
 describe("no trading", () => {
@@ -46,9 +46,10 @@ describe("no trading", () => {
     for (const n of names) expect(n).not.toMatch(/order|buy|sell|cancel|modify|gtt|trade/i);
   });
 
-  it("only GET requests reach broker data endpoints (POST only for login)", () => {
+  it("only GET requests reach broker data endpoints (POST only for logins and Angel's read-only price lookup)", () => {
     const src = files(join(here, "../src/brokers")).map((f) => readFileSync(f, "utf8")).join("\n");
     const posts = src.match(/method:\s*"(POST|PUT|DELETE|PATCH)"/g) ?? [];
-    expect(posts).toEqual(['method: "POST"', 'method: "POST"', 'method: "POST"']); // angel, groww, kite logins
+    // angel login, angel symbol search, angel quote, groww login, kite login
+    expect(posts).toEqual(Array(5).fill('method: "POST"'));
   });
 });

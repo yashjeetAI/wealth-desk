@@ -21,6 +21,12 @@ export class TokenStore extends DurableObject {
     await this.ctx.storage.delete(`state:${state}`);
     return exp > Date.now();
   }
+  async getCache(key: string): Promise<string | null> {
+    return (await this.ctx.storage.get<string>(`cache:${key}`)) ?? null;
+  }
+  async putCache(key: string, value: string): Promise<void> {
+    await this.ctx.storage.put(`cache:${key}`, value);
+  }
 }
 
 export function tokenStore(ns: DurableObjectNamespace<TokenStore>): TokenStoreLike {
@@ -31,5 +37,7 @@ export function tokenStore(ns: DurableObjectNamespace<TokenStore>): TokenStoreLi
     clear: (b) => stub.clearToken(b),
     putState: (s, ttl) => stub.putState(s, ttl),
     takeState: (s) => stub.takeState(s),
+    getCache: (k) => stub.getCache(k),
+    putCache: (k, v) => stub.putCache(k, v),
   };
 }

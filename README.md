@@ -33,7 +33,7 @@ It is a small, read-only [MCP](https://modelcontextprotocol.io) server. Run your
 Every holding has the same fields: `broker, symbol, exchange, isin, qty, avg_price, ltp, invested, value, pnl, pnl_pct`.
 Set up only the brokers you use; the rest are skipped. An expired login returns "login needed", not an error.
 
-**Prices for Groww:** Groww's free API plan has no live prices. If Zerodha is logged in, missing prices are taken from Kite quotes and marked `price_source: "kite"` (this needs a Kite Connect plan with market data). Anything still unpriced is valued at cost and listed under `unpriced`.
+**Prices for Groww:** Groww's free API plan has no live prices. Missing prices are filled from Zerodha (needs a Kite Connect plan with market data) or Angel One (free), whichever is logged in, and marked `price_source: "kite"` or `"angel"`. Anything still unpriced is valued at cost and listed under `unpriced`.
 
 ## Setup
 

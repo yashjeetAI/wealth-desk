@@ -49,6 +49,9 @@ export interface TokenStoreLike {
   putState(state: string, ttlMs: number): Promise<void>;
   /** True once if the state exists and is fresh; it is deleted either way. */
   takeState(state: string): Promise<boolean>;
+  /** Long-lived lookup cache (e.g. Angel symbol tokens). */
+  getCache(key: string): Promise<string | null>;
+  putCache(key: string, value: string): Promise<void>;
 }
 
 /** Thrown when a broker token is missing, expired or rejected. */

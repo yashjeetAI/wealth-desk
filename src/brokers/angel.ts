@@ -1,4 +1,4 @@
-// Angel One SmartAPI. Read-only: login, holdings, positions, funds.
+// Angel One SmartAPI. Read-only: login, holdings, positions, funds, prices.
 // Endpoints match the official smartapi-python client (SmartApi/smartConnect.py).
 import { BrokerError, LoginNeeded, type Funds, type Holding, type Position, type StoredToken } from "../types";
 import { TIMEOUT_MS, jwtExpiry, nextIstHour, num, round } from "../util";
@@ -9,6 +9,9 @@ export const ANGEL_PATHS = {
   holdings: "/rest/secure/angelbroking/portfolio/v1/getHolding",
   positions: "/rest/secure/angelbroking/order/v1/getPosition",
   funds: "/rest/secure/angelbroking/user/v1/getRMS",
+  // Read-only market data: symbol lookup and last traded price.
+  search: "/rest/secure/angelbroking/order/v1/searchScrip",
+  quote: "/rest/secure/angelbroking/market/v1/quote",
 } as const;
 
 export interface AngelConfig {
@@ -139,4 +142,54 @@ export async function angelPositions(apiKey: string, jwt: string, fetchFn: typeo
 }
 export async function angelFunds(apiKey: string, jwt: string, fetchFn: typeof fetch = fetch) {
   return normalizeAngelFunds((await get(fetchFn, apiKey, jwt, ANGEL_PATHS.funds)).data);
+}
+
+export type Exchange = "NSE" | "BSE";
+
+/** Angel's trading symbol for a plain exchange symbol: NSE equities carry a series suffix, BSE ones don't. */
+function pickToken(list: any[], exchange: Exchange, symbol: string): string | null {
+  const rows = (Array.isArray(list) ? list : []).filter((r) => r?.exchange === exchange && r?.symboltoken);
+  const want = exchange === "NSE" ? [`${symbol}-EQ`, `${symbol}-BE`, `${symbol}-BZ`, `${symbol}-SM`, `${symbol}-ST`] : [symbol];
+  for (const w of want) {
+    const hit = rows.find((r) => String(r.tradingsymbol).toUpperCase() === w);
+    if (hit) return String(hit.symboltoken);
+  }
+  return null;
+}
+
+/** Look up Angel's numeric token for a symbol. Null if Angel doesn't list it. */
+export async function angelSymbolToken(apiKey: string, jwt: string, exchange: Exchange, symbol: string, fetchFn: typeof fetch = fetch): Promise<string | null> {
+  const body = await call(fetchFn, ANGEL_PATHS.search, {
+    method: "POST",
+    headers: headers(apiKey, jwt),
+    body: JSON.stringify({ exchange, searchscrip: symbol }),
+  });
+  return pickToken(body?.data, exchange, symbol);
+}
+
+/**
+ * Last traded prices from Angel's free market data API.
+ * `tokens` maps "NSE:SYM" to Angel's symbol token; the result maps "NSE:SYM" to price.
+ */
+export async function angelLtp(apiKey: string, jwt: string, tokens: Record<string, string>, fetchFn: typeof fetch = fetch): Promise<Record<string, number>> {
+  const byToken = new Map<string, string>();
+  const exchangeTokens: Record<string, string[]> = {};
+  for (const [key, tok] of Object.entries(tokens)) {
+    const ex = key.split(":")[0];
+    byToken.set(`${ex}:${tok}`, key);
+    (exchangeTokens[ex] ??= []).push(tok);
+  }
+  if (!byToken.size) return {};
+  const body = await call(fetchFn, ANGEL_PATHS.quote, {
+    method: "POST",
+    headers: headers(apiKey, jwt),
+    body: JSON.stringify({ mode: "LTP", exchangeTokens }),
+  });
+  const out: Record<string, number> = {};
+  for (const r of body?.data?.fetched ?? []) {
+    const key = byToken.get(`${r?.exchange}:${r?.symbolToken}`);
+    const ltp = num(r?.ltp);
+    if (key && ltp !== null && ltp > 0) out[key] = ltp;
+  }
+  return out;
 }

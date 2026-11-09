@@ -16,6 +16,9 @@ export class MemStore implements TokenStoreLike {
     this.states.delete(s);
     return exp !== undefined && exp > Date.now();
   }
+  cache = new Map<string, string>();
+  async getCache(k: string) { return this.cache.get(k) ?? null; }
+  async putCache(k: string, v: string) { this.cache.set(k, v); }
 }
 
 export const OWNER = "12345";
@@ -58,6 +61,7 @@ export async function connect(deps: Partial<ToolDeps> & { fetch?: typeof fetch }
     githubId: "githubId" in deps ? deps.githubId : OWNER,
     fetch: deps.fetch,
     log: (l) => logs.push(l),
+    sleep: async () => {},
   });
   const [a, b] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "c", version: "0" });

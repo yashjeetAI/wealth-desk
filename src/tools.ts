@@ -1,10 +1,10 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { angelFunds, angelHoldings, angelLogin, angelPositions } from "./brokers/angel";
+import { angelFunds, angelHoldings, angelLogin, angelLtp, angelPositions, angelSymbolToken, type Exchange } from "./brokers/angel";
 import { growwFunds, growwHoldings, growwLogin, growwPositions } from "./brokers/groww";
 import { kiteFunds, kiteHoldings, kiteLogin, kiteLoginUrl, kiteLtp, kitePositions } from "./brokers/kite";
 import { isAllowedUser, isDisabled, type Env } from "./env";
-import { applyQuotes, mergePortfolio, quoteKeys } from "./portfolio";
+import { applyQuotes, baseSymbol, mergePortfolio, quoteKeys } from "./portfolio";
 import { BrokerError, LoginNeeded, type Broker, type Holding, type TokenStoreLike } from "./types";
 
 type Config = Pick<
@@ -27,7 +27,12 @@ export interface ToolDeps {
   githubId: string | undefined;
   fetch?: typeof fetch;
   log?: (line: string) => void;
+  /** Pause between rate-limited calls (tests pass a no-op). */
+  sleep?: (ms: number) => Promise<void>;
 }
+
+/** Angel allows about one symbol search per second. */
+export const ANGEL_SEARCH_GAP_MS = 1100;
 
 /** Every tool name this server exposes. The no-orders test checks this list. */
 export const TOOL_NAMES = [
@@ -64,6 +69,7 @@ const json = (v: unknown): Result => text(JSON.stringify(v, null, 2));
 export function registerTools(server: McpServer, deps: ToolDeps): void {
   const f = deps.fetch ?? fetch;
   const log = deps.log ?? ((l: string) => console.log(l));
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const { env, store } = deps;
   const ro = { readOnlyHint: true, destructiveHint: false, openWorldHint: true };
 
@@ -193,20 +199,66 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
   const angelKey = () => need(env.ANGEL_API_KEY, "ANGEL_API_KEY", "angel");
   const kiteKey = () => need(env.KITE_API_KEY, "KITE_API_KEY", "kite");
 
+  /** Today's token for a broker, or null if logged out. Never throws. */
+  async function liveToken(b: Broker): Promise<string | null> {
+    if (!configured(b)) return null;
+    const t = await store.get(b).catch(() => null);
+    return t && t.expiresAt > Date.now() ? t.token : null;
+  }
+
+  /** Angel quotes for unpriced holdings. Symbol tokens are looked up once and cached. */
+  async function angelQuotes(jwt: string, hs: Holding[]): Promise<Record<string, number>> {
+    const syms = [...new Set(hs.filter((h) => h.ltp === null && h.symbol).map((h) => baseSymbol(h.symbol)))];
+    const tokens: Record<string, string> = {};
+    let searched = false;
+    /** Cached token, else one paced lookup. undefined = lookup failed (don't guess another exchange). */
+    const lookup = async (ex: Exchange, sym: string): Promise<string | null | undefined> => {
+      const cached = await store.getCache(`angel:${ex}:${sym}`).catch(() => null);
+      if (cached) return cached;
+      if (searched) await sleep(ANGEL_SEARCH_GAP_MS);
+      searched = true;
+      let tok: string | null;
+      try {
+        tok = await angelSymbolToken(angelKey(), jwt, ex, sym, f);
+      } catch {
+        return undefined;
+      }
+      if (tok) await store.putCache(`angel:${ex}:${sym}`, tok).catch(() => {});
+      return tok;
+    };
+    for (const sym of syms) {
+      for (const ex of ["NSE", "BSE"] as Exchange[]) {
+        const tok = await lookup(ex, sym);
+        if (tok === undefined) break;
+        if (tok) {
+          tokens[`${ex}:${sym}`] = tok;
+          break;
+        }
+      }
+    }
+    return angelLtp(angelKey(), jwt, tokens, f);
+  }
+
   /**
-   * Price holdings that have none (Groww's free plan) using Kite quotes.
-   * Best effort: if Kite is logged out or the plan lacks quotes, holdings come back unchanged.
+   * Price holdings that have none (Groww's free plan): Kite quotes first, then Angel's free quotes.
+   * Best effort: a logged-out broker or a failed lookup just leaves holdings unpriced.
    */
   async function borrowPrices(hs: Holding[]): Promise<Holding[]> {
-    const keys = quoteKeys(hs);
-    if (!keys.length || !configured("kite")) return hs;
-    const t = await store.get("kite");
-    if (!t || t.expiresAt <= Date.now()) return hs;
-    try {
-      return applyQuotes(hs, await kiteLtp(kiteKey(), t.token, keys, f), "kite");
-    } catch {
-      return hs;
+    const sources: [Broker, (tok: string, hs: Holding[]) => Promise<Record<string, number>>][] = [
+      ["kite", (tok, hs) => kiteLtp(kiteKey(), tok, quoteKeys(hs), f)],
+      ["angel", angelQuotes],
+    ];
+    for (const [broker, quotes] of sources) {
+      if (!quoteKeys(hs).length) break;
+      const tok = await liveToken(broker);
+      if (!tok) continue;
+      try {
+        hs = applyQuotes(hs, await quotes(tok, hs), broker);
+      } catch {
+        // Try the next source.
+      }
     }
+    return hs;
   }
 
   server.registerTool(
@@ -228,7 +280,7 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
     "groww_holdings",
     {
       description:
-        "Groww stock holdings with qty, average price, LTP, value and P&L. If Groww has no live prices, they are taken from Zerodha when logged in (price_source: kite).",
+        "Groww stock holdings with qty, average price, LTP, value and P&L. If Groww has no live prices, they are taken from Zerodha or Angel One when logged in (see price_source).",
       annotations: ro,
     },
     wrap("groww_holdings", async () => json(await borrowPrices(await growwHoldings(await token("groww"), f)))),
@@ -264,7 +316,7 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
     "get_portfolio",
     {
       description:
-        "One merged view of Angel One, Groww and Zerodha holdings: totals, per-broker split, and each holding's weight. Missing prices are taken from Zerodha when logged in; any still missing are valued at cost and listed under 'unpriced'.",
+        "One merged view of Angel One, Groww and Zerodha holdings: totals, per-broker split, and each holding's weight. Missing prices are taken from Zerodha or Angel One when logged in; any still missing are valued at cost and listed under 'unpriced'.",
       annotations: ro,
     },
     wrap("get_portfolio", async () => {
@@ -290,8 +342,8 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       );
       const p = mergePortfolio(await borrowPrices(results.flat()), loginNeeded, errors);
       const notes = loginNeeded.map((b) => LOGIN_HINT[b]);
-      if (p.unpriced.length && configured("kite") && loginNeeded.includes("kite")) {
-        notes.push(`${p.unpriced.length} holdings have no live price and are valued at cost. Log in to Zerodha to price them.`);
+      if (p.unpriced.length && (loginNeeded.includes("kite") || loginNeeded.includes("angel"))) {
+        notes.push(`${p.unpriced.length} holdings have no live price and are valued at cost. Log in to Zerodha or Angel One to price them.`);
       }
       return json(notes.length ? { ...p, notes } : p);
     }),
