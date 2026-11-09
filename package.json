@@ -1,7 +1,7 @@
 {
   "name": "wealth-desk",
   "version": "1.0.0",
-  "description": "Read-only Groww + Angel One portfolio MCP server on Cloudflare Workers",
+  "description": "Read-only Zerodha, Groww and Angel One portfolio MCP server on Cloudflare Workers",
   "license": "MIT",
   "scripts": {
     "dev": "wrangler dev",
@@ -35,5 +35,15 @@
     "zod": "^4.6.7"
   },
   "private": true,
-  "type": "module"
+  "type": "module",
+  "keywords": [
+    "mcp",
+    "claude",
+    "portfolio",
+    "zerodha",
+    "kite",
+    "groww",
+    "angel-one",
+    "cloudflare-workers"
+  ]
 }

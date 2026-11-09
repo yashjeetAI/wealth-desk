@@ -2,13 +2,23 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { angelFunds, angelHoldings, angelLogin, angelPositions } from "./brokers/angel";
 import { growwFunds, growwHoldings, growwLogin, growwPositions } from "./brokers/groww";
+import { kiteFunds, kiteHoldings, kiteLogin, kiteLoginUrl, kiteLtp, kitePositions } from "./brokers/kite";
 import { isAllowedUser, isDisabled, type Env } from "./env";
-import { mergePortfolio } from "./portfolio";
+import { applyQuotes, mergePortfolio, quoteKeys } from "./portfolio";
 import { BrokerError, LoginNeeded, type Broker, type Holding, type TokenStoreLike } from "./types";
 
 type Config = Pick<
   Env,
-  "ANGEL_API_KEY" | "ANGEL_CLIENT_CODE" | "ANGEL_MPIN" | "GROWW_API_KEY" | "GROWW_API_SECRET" | "DISABLED" | "ALLOWED_GITHUB_USER_ID"
+  | "ANGEL_API_KEY"
+  | "ANGEL_CLIENT_CODE"
+  | "ANGEL_MPIN"
+  | "GROWW_API_KEY"
+  | "GROWW_API_SECRET"
+  | "KITE_API_KEY"
+  | "KITE_API_SECRET"
+  | "DISABLED"
+  | "ALLOWED_GITHUB_USER_ID"
+  | "PUBLIC_URL"
 >;
 
 export interface ToolDeps {
@@ -30,13 +40,21 @@ export const TOOL_NAMES = [
   "groww_holdings",
   "groww_positions",
   "groww_funds",
+  "kite_login",
+  "kite_holdings",
+  "kite_positions",
+  "kite_funds",
   "get_portfolio",
 ] as const;
 
-const NAMES: Record<Broker, string> = { angel: "Angel One", groww: "Groww" };
+const NAMES: Record<Broker, string> = { angel: "Angel One", groww: "Groww", kite: "Zerodha" };
+const BROKERS: Broker[] = ["angel", "groww", "kite"];
+/** How long a kite_login link stays valid. */
+export const KITE_STATE_TTL_MS = 10 * 60 * 1000;
 const LOGIN_HINT: Record<Broker, string> = {
   angel: "Angel One login needed. Call angel_login with your 6-digit TOTP code.",
   groww: "Groww login needed. Approve your API key in Groww, then call groww_login.",
+  kite: "Zerodha login needed. Call kite_login and open the link it gives you.",
 };
 
 type Result = { content: { type: "text"; text: string }[]; isError?: boolean };
@@ -54,6 +72,10 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
     if (!t || t.expiresAt <= Date.now()) throw new LoginNeeded(broker);
     return t.token;
   }
+
+  /** A broker counts as set up once its API key is on the server. */
+  const configured = (b: Broker) =>
+    !!{ angel: env.ANGEL_API_KEY, groww: env.GROWW_API_KEY, kite: env.KITE_API_KEY }[b];
 
   function need(v: string | undefined, name: string, broker: Broker): string {
     if (!v) throw new BrokerError(broker, `${name} is not set on the server.`);
@@ -94,7 +116,11 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
     { description: "Show which brokers are logged in today and when each login expires.", annotations: { ...ro, openWorldHint: false } },
     wrap("auth_status", async () => {
       const out: Record<string, unknown> = {};
-      for (const b of ["angel", "groww"] as Broker[]) {
+      for (const b of BROKERS) {
+        if (!configured(b)) {
+          out[b] = { configured: false };
+          continue;
+        }
         const t = await store.get(b);
         const live = !!t && t.expiresAt > Date.now();
         out[b] = live ? { logged_in: true, expires_at: new Date(t!.expiresAt).toISOString() } : { logged_in: false, hint: LOGIN_HINT[b] };
@@ -140,7 +166,48 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
     }),
   );
 
+  server.registerTool(
+    "kite_login",
+    {
+      description:
+        "Log in to Zerodha (Kite) for today. Call with no arguments to get a login link; after logging in you are sent back and logged in automatically. If your Kite app redirects elsewhere, pass the request_token from the address bar.",
+      inputSchema: {
+        request_token: z.string().regex(/^[A-Za-z0-9]{8,64}$/, "letters and digits").optional().describe("request_token from the Kite redirect URL"),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    wrap("kite_login", async ({ request_token }: { request_token?: string }) => {
+      const apiKey = need(env.KITE_API_KEY, "KITE_API_KEY", "kite");
+      if (!request_token) {
+        const state = crypto.randomUUID();
+        await store.putState(state, KITE_STATE_TTL_MS);
+        const back = env.PUBLIC_URL ? ` You will be sent back to ${env.PUBLIC_URL.replace(/\/+$/, "")}/kite/callback.` : "";
+        return text(`Open this link and log in to Zerodha (valid 10 minutes):\n${kiteLoginUrl(apiKey, state)}\n${back}`.trim());
+      }
+      const t = await kiteLogin({ apiKey, apiSecret: need(env.KITE_API_SECRET, "KITE_API_SECRET", "kite") }, request_token, f);
+      await store.put("kite", t);
+      return text(`Zerodha logged in until ${new Date(t.expiresAt).toISOString()}.`);
+    }),
+  );
+
   const angelKey = () => need(env.ANGEL_API_KEY, "ANGEL_API_KEY", "angel");
+  const kiteKey = () => need(env.KITE_API_KEY, "KITE_API_KEY", "kite");
+
+  /**
+   * Price holdings that have none (Groww's free plan) using Kite quotes.
+   * Best effort: if Kite is logged out or the plan lacks quotes, holdings come back unchanged.
+   */
+  async function borrowPrices(hs: Holding[]): Promise<Holding[]> {
+    const keys = quoteKeys(hs);
+    if (!keys.length || !configured("kite")) return hs;
+    const t = await store.get("kite");
+    if (!t || t.expiresAt <= Date.now()) return hs;
+    try {
+      return applyQuotes(hs, await kiteLtp(kiteKey(), t.token, keys, f), "kite");
+    } catch {
+      return hs;
+    }
+  }
 
   server.registerTool(
     "angel_holdings",
@@ -159,8 +226,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
   );
   server.registerTool(
     "groww_holdings",
-    { description: "Groww stock holdings with qty and average price. LTP and P&L appear only if your Groww plan includes live data.", annotations: ro },
-    wrap("groww_holdings", async () => json(await growwHoldings(await token("groww"), f))),
+    {
+      description:
+        "Groww stock holdings with qty, average price, LTP, value and P&L. If Groww has no live prices, they are taken from Zerodha when logged in (price_source: kite).",
+      annotations: ro,
+    },
+    wrap("groww_holdings", async () => json(await borrowPrices(await growwHoldings(await token("groww"), f)))),
   );
   server.registerTool(
     "groww_positions",
@@ -174,10 +245,26 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
   );
 
   server.registerTool(
+    "kite_holdings",
+    { description: "Zerodha long-term holdings with qty, average price, LTP, value and P&L.", annotations: ro },
+    wrap("kite_holdings", async () => json(await kiteHoldings(kiteKey(), await token("kite"), f))),
+  );
+  server.registerTool(
+    "kite_positions",
+    { description: "Zerodha open positions for today.", annotations: ro },
+    wrap("kite_positions", async () => json(await kitePositions(kiteKey(), await token("kite"), f))),
+  );
+  server.registerTool(
+    "kite_funds",
+    { description: "Zerodha available cash and margin used (equity segment).", annotations: ro },
+    wrap("kite_funds", async () => json(await kiteFunds(kiteKey(), await token("kite"), f))),
+  );
+
+  server.registerTool(
     "get_portfolio",
     {
       description:
-        "One merged view of Angel One and Groww holdings: totals, per-broker split, and each holding's weight. Holdings without a live price are valued at cost and listed under 'unpriced'.",
+        "One merged view of Angel One, Groww and Zerodha holdings: totals, per-broker split, and each holding's weight. Missing prices are taken from Zerodha when logged in; any still missing are valued at cost and listed under 'unpriced'.",
       annotations: ro,
     },
     wrap("get_portfolio", async () => {
@@ -186,9 +273,10 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       const fetchers: Record<Broker, () => Promise<Holding[]>> = {
         angel: async () => angelHoldings(angelKey(), await token("angel"), f),
         groww: async () => growwHoldings(await token("groww"), f),
+        kite: async () => kiteHoldings(kiteKey(), await token("kite"), f),
       };
       const results = await Promise.all(
-        (Object.keys(fetchers) as Broker[]).map(async (b) => {
+        BROKERS.filter(configured).map(async (b) => {
           try {
             return await fetchers[b]();
           } catch (e) {
@@ -200,8 +288,11 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
           }
         }),
       );
-      const p = mergePortfolio(results.flat(), loginNeeded, errors);
+      const p = mergePortfolio(await borrowPrices(results.flat()), loginNeeded, errors);
       const notes = loginNeeded.map((b) => LOGIN_HINT[b]);
+      if (p.unpriced.length && configured("kite") && loginNeeded.includes("kite")) {
+        notes.push(`${p.unpriced.length} holdings have no live price and are valued at cost. Log in to Zerodha to price them.`);
+      }
       return json(notes.length ? { ...p, notes } : p);
     }),
   );

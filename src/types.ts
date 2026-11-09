@@ -1,4 +1,4 @@
-export type Broker = "angel" | "groww";
+export type Broker = "angel" | "groww" | "kite";
 
 /** One holding, same shape for every broker. */
 export interface Holding {
@@ -13,6 +13,8 @@ export interface Holding {
   value: number | null;
   pnl: number | null;
   pnl_pct: number | null;
+  /** Set when the price came from another broker's quote API. */
+  price_source?: Broker;
 }
 
 export interface Position {
@@ -43,6 +45,10 @@ export interface TokenStoreLike {
   get(broker: Broker): Promise<StoredToken | null>;
   put(broker: Broker, token: StoredToken): Promise<void>;
   clear(broker: Broker): Promise<void>;
+  /** One-time login state (Kite redirect). Expires after ttlMs. */
+  putState(state: string, ttlMs: number): Promise<void>;
+  /** True once if the state exists and is fresh; it is deleted either way. */
+  takeState(state: string): Promise<boolean>;
 }
 
 /** Thrown when a broker token is missing, expired or rejected. */

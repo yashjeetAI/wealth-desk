@@ -149,7 +149,7 @@ describe("get_portfolio", () => {
     const { f } = mockFetch({ [ANGEL_ROOT + ANGEL_PATHS.holdings]: () => jsonRes(angelHoldingsBody) });
     const { call } = await connect({ fetch: f, store });
     const p = JSON.parse((await call("get_portfolio")).text);
-    expect(p.login_needed).toEqual(["groww"]);
+    expect([...p.login_needed].sort()).toEqual(["groww", "kite"]);
     expect(p.notes[0]).toMatch(/Groww login needed/);
     expect(p.holdings).toHaveLength(1);
   });

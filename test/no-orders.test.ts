@@ -49,6 +49,6 @@ describe("no trading", () => {
   it("only GET requests reach broker data endpoints (POST only for login)", () => {
     const src = files(join(here, "../src/brokers")).map((f) => readFileSync(f, "utf8")).join("\n");
     const posts = src.match(/method:\s*"(POST|PUT|DELETE|PATCH)"/g) ?? [];
-    expect(posts).toEqual(['method: "POST"', 'method: "POST"']); // angel login + groww login
+    expect(posts).toEqual(['method: "POST"', 'method: "POST"', 'method: "POST"']); // angel, groww, kite logins
   });
 });

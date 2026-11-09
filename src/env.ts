@@ -9,6 +9,8 @@ export interface Env {
   ANGEL_MPIN?: string;
   GROWW_API_KEY?: string;
   GROWW_API_SECRET?: string;
+  KITE_API_KEY?: string;
+  KITE_API_SECRET?: string;
   // Vars (wrangler.jsonc)
   ALLOWED_GITHUB_USER_ID: string;
   DISABLED?: string;

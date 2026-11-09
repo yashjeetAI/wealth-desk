@@ -12,6 +12,15 @@ export class TokenStore extends DurableObject {
   async clearToken(broker: Broker): Promise<void> {
     await this.ctx.storage.delete(`token:${broker}`);
   }
+  async putState(state: string, ttlMs: number): Promise<void> {
+    await this.ctx.storage.put(`state:${state}`, Date.now() + ttlMs);
+  }
+  async takeState(state: string): Promise<boolean> {
+    const exp = await this.ctx.storage.get<number>(`state:${state}`);
+    if (exp === undefined) return false;
+    await this.ctx.storage.delete(`state:${state}`);
+    return exp > Date.now();
+  }
 }
 
 export function tokenStore(ns: DurableObjectNamespace<TokenStore>): TokenStoreLike {
@@ -20,5 +29,7 @@ export function tokenStore(ns: DurableObjectNamespace<TokenStore>): TokenStoreLi
     get: (b) => stub.getToken(b),
     put: (b, t) => stub.putToken(b, t),
     clear: (b) => stub.clearToken(b),
+    putState: (s, ttl) => stub.putState(s, ttl),
+    takeState: (s) => stub.takeState(s),
   };
 }

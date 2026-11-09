@@ -9,6 +9,13 @@ export class MemStore implements TokenStoreLike {
   async get(b: Broker) { return this.m.get(b) ?? null; }
   async put(b: Broker, t: StoredToken) { this.m.set(b, t); }
   async clear(b: Broker) { this.m.delete(b); }
+  states = new Map<string, number>();
+  async putState(s: string, ttl: number) { this.states.set(s, Date.now() + ttl); }
+  async takeState(s: string) {
+    const exp = this.states.get(s);
+    this.states.delete(s);
+    return exp !== undefined && exp > Date.now();
+  }
 }
 
 export const OWNER = "12345";
@@ -18,6 +25,9 @@ export const baseEnv = {
   ANGEL_MPIN: "1111",
   GROWW_API_KEY: "gk",
   GROWW_API_SECRET: "gs",
+  KITE_API_KEY: "kk",
+  KITE_API_SECRET: "ks",
+  PUBLIC_URL: "https://pm.example.workers.dev",
   ALLOWED_GITHUB_USER_ID: OWNER,
   DISABLED: "false",
 };

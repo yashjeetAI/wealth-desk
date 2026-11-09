@@ -7,6 +7,8 @@ import {
 } from "@cloudflare/workers-oauth-provider";
 import { Hono } from "hono";
 import { isAllowedUser, type Env } from "./env";
+import { handleKiteCallback } from "./kite-callback";
+import { tokenStore } from "./token-store";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -28,7 +30,7 @@ function consentPage(d: ConsentDescription, handle: string): string {
   const origin = d.clientDomain
     ? `Published by <strong>${esc(d.clientDomain)}</strong>.`
     : "This app registered itself; its name is not verified.";
-  return `<p>Allow <strong>${esc(d.clientName)}</strong> to read your Groww and Angel One portfolio? It cannot trade.</p>
+  return `<p>Allow <strong>${esc(d.clientName)}</strong> to read your Groww, Angel One and Zerodha portfolio? It cannot trade.</p>
 <p>${origin} Access goes to <strong>${esc(d.redirectHost)}</strong>.</p>
 ${d.redirectIsLoopback ? '<p class="warn"><strong>This sends access to an app on your computer.</strong> Continue only if you just started signing in from it.</p>' : ""}
 <form method="post"><input type="hidden" name="handle" value="${esc(handle)}">
@@ -132,6 +134,11 @@ app.get("/callback", async (c) => {
   } catch (e) {
     return handleError(e);
   }
+});
+
+app.get("/kite/callback", async (c) => {
+  const r = await handleKiteCallback(new URL(c.req.url), c.env, tokenStore(c.env.TOKEN_STORE));
+  return page(r.status === 200 ? "Zerodha connected" : "Zerodha login failed", `<p>${esc(r.message)}</p>`, undefined, r.status);
 });
 
 app.get("/", (c) => c.text("Portfolio MCP: read-only. Connect at /mcp."));

@@ -1,9 +1,19 @@
 # Copy to .dev.vars for `npm run dev`. Never commit .dev.vars.
-# In production, set each one with: npx wrangler secret put <NAME>
-GITHUB_CLIENT_ID=your-github-oauth-client-id
-GITHUB_CLIENT_SECRET=your-github-oauth-client-secret
-ANGEL_API_KEY=your-smartapi-app-key
-ANGEL_CLIENT_CODE=your-angel-client-id
-ANGEL_MPIN=your-angel-mpin
-GROWW_API_KEY=your-groww-api-key
-GROWW_API_SECRET=your-groww-api-secret
+# In production set each with: npx wrangler secret put <NAME>
+
+# GitHub OAuth app (required)
+GITHUB_CLIENT_ID=
+GITHUB_CLIENT_SECRET=
+
+# Angel One SmartAPI (optional)
+ANGEL_API_KEY=
+ANGEL_CLIENT_CODE=
+ANGEL_MPIN=
+
+# Groww Trade API (optional; secret only for approval-type keys)
+GROWW_API_KEY=
+GROWW_API_SECRET=
+
+# Zerodha Kite Connect (optional)
+KITE_API_KEY=
+KITE_API_SECRET=
