@@ -17,3 +17,7 @@ GROWW_API_SECRET=
 # Zerodha Kite Connect (optional)
 KITE_API_KEY=
 KITE_API_SECRET=
+
+# Local only (Option B): override wrangler.jsonc
+ALLOWED_GITHUB_USER_ID=
+PUBLIC_URL=http://localhost:8787
