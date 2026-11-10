@@ -16,8 +16,13 @@
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["PortfolioMCP", "TokenStore"] }],
   "kv_namespaces": [
     // Run: npx wrangler kv namespace create OAUTH_KV, then paste the id here
-    { "binding": "OAUTH_KV", "id": "<your-kv-namespace-id>" }
+    { "binding": "OAUTH_KV", "id": "<your-kv-namespace-id>" },
+    // Optional, for portfolio_events. Run: npx wrangler kv namespace create EVENTS_KV, then paste the id here.
+    // Remove this line if you don't want filings; the rest still works.
+    { "binding": "EVENTS_KV", "id": "<your-events-kv-namespace-id>" }
   ],
+  // Reads NSE's public announcements feed every 15 minutes (portfolio_events).
+  "triggers": { "crons": ["*/15 * * * *"] },
   "vars": {
     // Your numeric GitHub user id (https://api.github.com/users/<your-login> -> id)
     "ALLOWED_GITHUB_USER_ID": "<your-github-user-id>",
