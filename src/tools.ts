@@ -4,6 +4,7 @@ import { angelFunds, angelHoldings, angelLogin, angelLtp, angelPositions, angelS
 import { growwFunds, growwHoldings, growwLogin, growwPositions } from "./brokers/groww";
 import { kiteFunds, kiteHoldings, kiteLogin, kiteLoginUrl, kiteLtp, kitePositions } from "./brokers/kite";
 import { isAllowedUser, isDisabled, type Env } from "./env";
+import { buildEvents, uniqueStocks, type EventCache, type EventSource } from "./events";
 import { applyQuotes, baseSymbol, mergePortfolio, quoteKeys } from "./portfolio";
 import { BrokerError, LoginNeeded, type Broker, type Holding, type TokenStoreLike } from "./types";
 
@@ -27,6 +28,13 @@ export interface ToolDeps {
   githubId: string | undefined;
   fetch?: typeof fetch;
   log?: (line: string) => void;
+  /** Filings source for portfolio_events. Not set until a data source is chosen. */
+  events?: {
+    source: EventSource;
+    cache?: EventCache;
+    /** Remember which symbols you hold, so the scheduled job knows what to keep. */
+    watch?: (symbols: string[]) => Promise<void>;
+  };
   /** Pause between rate-limited calls (tests pass a no-op). */
   sleep?: (ms: number) => Promise<void>;
 }
@@ -50,6 +58,7 @@ export const TOOL_NAMES = [
   "kite_positions",
   "kite_funds",
   "get_portfolio",
+  "portfolio_events",
 ] as const;
 
 const NAMES: Record<Broker, string> = { angel: "Angel One", groww: "Groww", kite: "Zerodha" };
@@ -312,6 +321,36 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
     wrap("kite_funds", async () => json(await kiteFunds(kiteKey(), await token("kite"), f))),
   );
 
+  /** Holdings from every set-up broker, merged. A broker that fails is listed, not thrown. */
+  async function loadPortfolio() {
+    const loginNeeded: Broker[] = [];
+    const errors: string[] = [];
+    const fetchers: Record<Broker, () => Promise<Holding[]>> = {
+      angel: async () => angelHoldings(angelKey(), await token("angel"), f),
+      groww: async () => growwHoldings(await token("groww"), f),
+      kite: async () => kiteHoldings(kiteKey(), await token("kite"), f),
+    };
+    const results = await Promise.all(
+      BROKERS.filter(configured).map(async (b) => {
+        try {
+          return await fetchers[b]();
+        } catch (e) {
+          if (e instanceof LoginNeeded) {
+            loginNeeded.push(b);
+            await store.clear(b).catch(() => {});
+          } else errors.push(e instanceof BrokerError ? e.message : `${NAMES[b]}: unexpected error`);
+          return [];
+        }
+      }),
+    );
+    const p = mergePortfolio(await borrowPrices(results.flat()), loginNeeded, errors);
+    // Save the symbol list only when every broker answered, so a missed login never drops stocks.
+    if (deps.events?.watch && !loginNeeded.length && !errors.length && p.holdings.length) {
+      await deps.events.watch(uniqueStocks(p.holdings).map((s) => s.symbol)).catch(() => {});
+    }
+    return p;
+  }
+
   server.registerTool(
     "get_portfolio",
     {
@@ -320,32 +359,30 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       annotations: ro,
     },
     wrap("get_portfolio", async () => {
-      const loginNeeded: Broker[] = [];
-      const errors: string[] = [];
-      const fetchers: Record<Broker, () => Promise<Holding[]>> = {
-        angel: async () => angelHoldings(angelKey(), await token("angel"), f),
-        groww: async () => growwHoldings(await token("groww"), f),
-        kite: async () => kiteHoldings(kiteKey(), await token("kite"), f),
-      };
-      const results = await Promise.all(
-        BROKERS.filter(configured).map(async (b) => {
-          try {
-            return await fetchers[b]();
-          } catch (e) {
-            if (e instanceof LoginNeeded) {
-              loginNeeded.push(b);
-              await store.clear(b).catch(() => {});
-            } else errors.push(e instanceof BrokerError ? e.message : `${NAMES[b]}: unexpected error`);
-            return [];
-          }
-        }),
-      );
-      const p = mergePortfolio(await borrowPrices(results.flat()), loginNeeded, errors);
-      const notes = loginNeeded.map((b) => LOGIN_HINT[b]);
-      if (p.unpriced.length && (loginNeeded.includes("kite") || loginNeeded.includes("angel"))) {
+      const p = await loadPortfolio();
+      const notes = p.login_needed.map((b) => LOGIN_HINT[b]);
+      if (p.unpriced.length && (p.login_needed.includes("kite") || p.login_needed.includes("angel"))) {
         notes.push(`${p.unpriced.length} holdings have no live price and are valued at cost. Log in to Zerodha or Angel One to price them.`);
       }
       return json(notes.length ? { ...p, notes } : p);
+    }),
+  );
+
+  server.registerTool(
+    "portfolio_events",
+    {
+      description:
+        "Exchange filings and corporate actions for the stocks you hold, flagged REVIEW (pledge, auditor exit, default, SEBI order, insolvency), WATCH (results, ratings, bulk/block deals, orders, acquisitions) or INFO (dividend, split, bonus, board meeting), with a link to each filing. Facts only: no buy or sell advice.",
+      inputSchema: { days: z.number().int().min(1).max(30).default(7).describe("How many days back to look (1-30)") },
+      annotations: ro,
+    },
+    wrap("portfolio_events", async ({ days }: { days: number }) => {
+      if (!deps.events) return text("No filings source is set up yet, so portfolio_events has nothing to check.");
+      const p = await loadPortfolio();
+      const report = await buildEvents(uniqueStocks(p.holdings), deps.events.source, { days, cache: deps.events.cache });
+      const notes = p.login_needed.map((b) => LOGIN_HINT[b]);
+      if (report.source_unavailable.length) notes.push(`Source unavailable for: ${report.source_unavailable.join(", ")}. Results are partial.`);
+      return json({ ...report, login_needed: p.login_needed, errors: p.errors, ...(notes.length ? { notes } : {}) });
     }),
   );
 }

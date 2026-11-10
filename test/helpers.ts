@@ -60,6 +60,7 @@ export async function connect(deps: Partial<ToolDeps> & { fetch?: typeof fetch }
     store,
     githubId: "githubId" in deps ? deps.githubId : OWNER,
     fetch: deps.fetch,
+    events: deps.events,
     log: (l) => logs.push(l),
     sleep: async () => {},
   });

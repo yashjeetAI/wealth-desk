@@ -17,6 +17,8 @@ export interface Env {
   PUBLIC_URL?: string;
   // Bindings
   OAUTH_KV: KVNamespace;
+  /** Filings for portfolio_events. Optional until the namespace is created. */
+  EVENTS_KV?: KVNamespace;
   OAUTH_PROVIDER: OAuthHelpers;
   MCP_OBJECT: DurableObjectNamespace;
   TOKEN_STORE: DurableObjectNamespace<import("./token-store").TokenStore>;

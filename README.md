@@ -2,7 +2,7 @@
 
 Ask Claude about your Indian stock portfolio across **Zerodha (Kite)**, **Groww** and **Angel One** in one answer.
 
-It is a small, read-only [MCP](https://modelcontextprotocol.io) server. Run your own copy on Cloudflare Workers (free tier) or on your own computer, add it to Claude, and ask things like *"show my full portfolio"* or *"which holdings are down?"*.
+It is a small, read-only [MCP](https://modelcontextprotocol.io) server. Run your own copy on Cloudflare Workers (free tier) or on your own computer, add it to Claude, and ask things like *"show my full portfolio"*, *"which holdings are down?"* or *"anything filed on my stocks this week?"*.
 
 - **Read-only.** There is no code to place, change or cancel orders. A test fails the build if any appears.
 - **Your keys, your server.** Each person runs their own copy with their own broker keys. Nothing goes through anyone else's server.
@@ -29,11 +29,31 @@ It is a small, read-only [MCP](https://modelcontextprotocol.io) server. Run your
 | `groww_holdings` / `groww_positions` / `groww_funds` | Groww data |
 | `angel_holdings` / `angel_positions` / `angel_funds` | Angel One data |
 | `get_portfolio` | All brokers merged: totals, per-broker split, each holding's weight |
+| `portfolio_events(days=7)` | **Beta.** NSE filings for the stocks you hold, flagged REVIEW / WATCH / INFO, with a link to each filing |
 
 Every holding has the same fields: `broker, symbol, exchange, isin, qty, avg_price, ltp, invested, value, pnl, pnl_pct`.
 Set up only the brokers you use; the rest are skipped. An expired login returns "login needed", not an error.
 
 **Prices for Groww:** Groww's free API plan has no live prices. Missing prices are filled from Zerodha (needs a Kite Connect plan with market data) or Angel One (free), whichever is logged in, and marked `price_source: "kite"` or `"angel"`. Anything still unpriced is valued at cost and listed under `unpriced`.
+
+## Filings on your stocks (beta)
+
+`portfolio_events` tells you what is happening to what you own: results, pledges, rating changes, analyst calls, dividends.
+
+- Every 15 minutes, a scheduled job reads NSE's public announcements feed and keeps only filings for your stocks.
+- Your stock list is saved the first time `get_portfolio` runs with every broker logged in. Only symbols are stored: no quantities or values.
+- Each filing gets a flag from simple rules, not AI:
+
+| Flag | Examples |
+|---|---|
+| REVIEW | Promoter pledge, auditor resignation, default or delay, SEBI order, insolvency |
+| WATCH | Results, credit rating, bulk/block deal, order win, acquisition, analyst or earnings call |
+| INFO | Dividend, split, bonus, board meeting, record date |
+
+**Limits (it's a beta):**
+- History starts the day you turn it on. NSE's feed only covers the last few hours, so there's no backfill.
+- NSE only. Stocks listed only on BSE are not covered.
+- Filings flag facts. They are not buy or sell signals.
 
 ## Setup
 
@@ -60,10 +80,12 @@ npm install
 ```sh
 npx wrangler login
 npx wrangler kv namespace create OAUTH_KV
+npx wrangler kv namespace create EVENTS_KV   # optional, for portfolio_events
 ```
 
-1. **wrangler.jsonc:** replace the three placeholders:
-   - `<your-kv-namespace-id>`: the id printed by the command above.
+1. **wrangler.jsonc:** replace the placeholders:
+   - `<your-kv-namespace-id>`: the OAUTH_KV id printed above.
+   - `<your-events-kv-namespace-id>`: the EVENTS_KV id (or delete that line to skip filings).
    - `<your-github-user-id>`: the numeric `id` from `https://api.github.com/users/<your-login>`.
    - `PUBLIC_URL`: fill in after the first deploy.
 2. **First deploy:** `npm run deploy`. Note the URL (e.g. `https://wealth-desk.<you>.workers.dev`) and put it in `PUBLIC_URL`.
@@ -107,6 +129,8 @@ No Cloudflare account needed. Everything runs on your computer at `http://localh
 
 Your daily broker tokens are stored in `.wrangler/` on your computer (ignored by git). Never commit `.dev.vars`.
 
+**Filings locally:** `wrangler dev` doesn't run the 15-minute job on its own. Run `npm run dev -- --test-scheduled` and open `http://localhost:8787/__scheduled` to pull the latest NSE filings.
+
 ## Daily use
 
 Broker logins last one day.
@@ -115,6 +139,7 @@ Broker logins last one day.
 - **Groww:** approve your key in the Groww app (approval keys), then "log in to Groww".
 - **Angel One:** "Log in to Angel with 123456" (your current TOTP code).
 - Then: "Show my full portfolio".
+- And: "Anything filed on my stocks this week?"
 
 ## Security
 
@@ -138,4 +163,4 @@ API calls follow the official clients: `pykiteconnect`, `growwapi` 1.5.0 and `sm
 
 ## Disclaimer
 
-Not financial advice. This is an unofficial tool, not affiliated with Zerodha, Groww, Angel One or Anthropic. Each broker's API terms apply to you; you are responsible for following them. It shows data your broker returns; check important numbers in your broker's app. Use at your own risk; see [LICENSE](LICENSE).
+Not financial advice. This is an unofficial tool, not affiliated with Zerodha, Groww, Angel One, NSE or Anthropic. Filings come from NSE's public announcements feed; check the original filing before acting on it. Each broker's API terms apply to you; you are responsible for following them. It shows data your broker returns; check important numbers in your broker's app. Use at your own risk; see [LICENSE](LICENSE).
